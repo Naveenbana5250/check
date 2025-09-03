@@ -1,30 +1,20 @@
 # .github/workflows/build-push-sign-and-deploy.yml
-name: Build, Push, Sign, Validate, and Deploy Container Image
-
+name: Build, Sign, Enforce, Test, Deploy
 on:
   push:
     branches: [ "main" ]
-
 jobs:
-  build-push-sign-deploy:
-    name: Build, Push, Sign, Validate, and Deploy
+  supply-chain:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
 
-      # 1️⃣ Checkout repository
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # 2️⃣ Log in to Docker Hub
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 3️⃣ Build and push Docker image with commit SHA tag
-      - name: Build and push Docker image
-        id: build-and-push
+      - id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -33,58 +23,61 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/leviathan-app:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/leviathan-app:${{ github.sha }}
 
-      # 4️⃣ Get the digest of the pushed image
-      - name: Get image digest
-        id: get-digest
-        run: |
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ secrets.DOCKERHUB_USERNAME }}/leviathan-app:${{ github.sha }})
-          echo "IMAGE_DIGEST=$DIGEST" >> $GITHUB_ENV
+      - run: echo "IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/leviathan-app@${{ steps.build.outputs.digest }}" >> $GITHUB_ENV
 
-      # 5️⃣ Install Cosign
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@v3.5.0
-
-      # 6️⃣ Write Cosign private key safely
-      - name: Write Cosign private key
-        run: |
+      - uses: sigstore/cosign-installer@v3.5.0
+      - run: |
           printf '%s\n' "${{ secrets.COSIGN_PRIVATE_KEY }}" > cosign.key
+          printf '%s\n' "${{ secrets.COSIGN_PUBLIC_KEY }}" > cosign.pub
 
-      # 7️⃣ Sign the container image
-      - name: Sign the container image
-        run: |
-          cosign sign --key cosign.key --yes $IMAGE_DIGEST
+      - name: Sign image
         env:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: cosign sign --key cosign.key --yes "$IMAGE"
 
-      # 8️⃣ Remove Cosign key after signing
-      - name: Remove Cosign private key
-        run: rm -f cosign.key
+      - name: Verify signature
+        run: cosign verify --key cosign.pub "$IMAGE"
 
-      # 9️⃣ Install Kyverno via Helm
-      - name: Install Kyverno with Helm
+      - uses: azure/setup-kubectl@v4
+      - uses: azure/setup-helm@v4
+      - name: Configure cluster and install Kyverno
         run: |
           echo "${{ secrets.KUBECONFIG_CONTENT }}" > kubeconfig
           export KUBECONFIG=$PWD/kubeconfig
-
-          # Add Kyverno Helm repo
           helm repo add kyverno https://kyverno.github.io/kyverno/
           helm repo update
-
-          # Install Kyverno in the cluster if not already installed
           helm upgrade --install kyverno kyverno/kyverno \
             --namespace kyverno --create-namespace \
-            --set replicaCount=1 \
-            --set webhook.failurePolicy=Fail
+            --set webhook.failurePolicy=Fail --wait
+          kubectl -n kyverno create secret generic cosign-pub \
+            --from-file=cosign.pub=./cosign.pub \
+            --dry-run=client -o yaml | kubectl apply -f -
 
-      # 🔟 Apply Kyverno policy and validate deployment
-      - name: Apply Kyverno policy and validate deployment
+      - name: Apply Kyverno policy
         run: |
           export KUBECONFIG=$PWD/kubeconfig
-
-          # Apply the policy
           kubectl apply -f require-signing-policy.yaml
 
-      - name: Deploy to Kubernetes
+      - name: Negative test (unsigned must be blocked)
+        run: |
+          set +e
+          export KUBECONFIG=$PWD/kubeconfig
+          kubectl run unsigned-test --image=nginx:1.25-alpine --restart=Never
+          rc=$?
+          if [ $rc -eq 0 ]; then
+            echo "Unsigned image was allowed but should be blocked"
+            kubectl delete pod unsigned-test --force --grace-period=0 || true
+            exit 1
+          else
+            echo "Unsigned image correctly blocked"
+          fi
+          set -e
+
+      - name: Deploy signed workload
         run: |
           export KUBECONFIG=$PWD/kubeconfig
           kubectl apply -f deployment.yaml
+
+      - name: Cleanup keys
+        if: always()
+        run: rm -f cosign.key cosign.pub kubeconfig
