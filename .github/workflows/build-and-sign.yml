@@ -30,6 +30,7 @@ jobs:
           context: .
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/leviathan-app:latest
+          outputs: type=digest   # <-- ensures digest is available
 
       # 4️⃣ Install Cosign
       - name: Install Cosign
@@ -41,15 +42,16 @@ jobs:
           cat <<'EOF' > cosign.key
 ${{ secrets.COSIGN_PRIVATE_KEY }}
 EOF
-          # Validate header/footer
           head -1 cosign.key | grep -q 'BEGIN SIGSTORE PRIVATE KEY' || { echo 'Bad cosign.key header'; exit 1; }
           tail -1 cosign.key | grep -q 'END SIGSTORE PRIVATE KEY'   || { echo 'Bad cosign.key footer'; exit 1; }
           chmod 600 cosign.key
 
       # 6️⃣ Sign the container image with Cosign
       - name: Sign the container image with Cosign
-        run: cosign sign --key cosign.key ${{ steps.build-and-push.outputs.digest }}
+        run: |
+          cosign sign --yes --key cosign.key ${{ secrets.DOCKERHUB_USERNAME }}/leviathan-app@${{ steps.build-and-push.outputs.digest }}
 
       # 7️⃣ Verify the signature
       - name: Verify signature
-        run: cosign verify --key cosign.key ${{ steps.build-and-push.outputs.digest }}
+        run: |
+          cosign verify --key cosign.key ${{ secrets.DOCKERHUB_USERNAME }}/leviathan-app@${{ steps.build-and-push.outputs.digest }}
