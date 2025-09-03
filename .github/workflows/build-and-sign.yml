@@ -56,30 +56,38 @@ jobs:
         env:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
 
-      # 8️⃣ Delete Cosign key after signing
+      # 8️⃣ Remove Cosign key after signing
       - name: Remove Cosign private key
         run: rm -f cosign.key
 
-      # 9️⃣ Validate deployment with Kyverno policy
-      - name: Validate deployment with Kyverno
+      # 9️⃣ Install Kyverno via Helm
+      - name: Install Kyverno with Helm
         run: |
-          # Install Kyverno CLI
-          curl -LO https://github.com/kyverno/kyverno/releases/download/v1.10.2/kyverno-cli_linux_amd64.tar.gz
-          tar -xzf kyverno-cli_linux_amd64.tar.gz
-          chmod +x kyverno
-          mv kyverno /usr/local/bin/
-
-          # Setup kubeconfig
           echo "${{ secrets.KUBECONFIG_CONTENT }}" > kubeconfig
           export KUBECONFIG=$PWD/kubeconfig
 
-          # Apply the Kyverno policy (optional if already applied)
+          # Add Kyverno Helm repo
+          helm repo add kyverno https://kyverno.github.io/kyverno/
+          helm repo update
+
+          # Install Kyverno in the cluster if not already installed
+          helm upgrade --install kyverno kyverno/kyverno \
+            --namespace kyverno --create-namespace \
+            --set replicaCount=1 \
+            --set webhook.failurePolicy=Fail
+
+      # 🔟 Apply Kyverno policy and validate deployment
+      - name: Apply Kyverno policy and validate deployment
+        run: |
+          export KUBECONFIG=$PWD/kubeconfig
+
+          # Apply the policy
           kubectl apply -f require-signing-policy.yaml
 
-          # Validate deployment in dry-run mode
+          # Dry-run validation of deployment
           kyverno apply require-signing-policy.yaml --resource deployment.yaml --namespace default --fail-on-error
 
-      # 🔟 Deploy to Kubernetes only if validation passes
+      # 1️⃣1️⃣ Deploy to Kubernetes only if validation passes
       - name: Deploy to Kubernetes
         run: |
           export KUBECONFIG=$PWD/kubeconfig
