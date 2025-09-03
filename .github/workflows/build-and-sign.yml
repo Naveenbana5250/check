@@ -1,4 +1,3 @@
-# .github/workflows/build-and-sign.yml
 name: Build, Push, and Sign Container Image
 
 on:
@@ -34,15 +33,13 @@ jobs:
       - name: Restore Cosign Key
         run: |
           echo "${{ secrets.COSIGN_PRIVATE_KEY }}" > cosign.key
-          head -1 cosign.key | grep -q 'BEGIN ENCRYPTED SIGSTORE PRIVATE KEY' || { echo 'Bad cosign.key header'; exit 1; }
-          tail -1 cosign.key | grep -q 'END ENCRYPTED SIGSTORE PRIVATE KEY'   || { echo 'Bad cosign.key footer'; exit 1; }
+          # Check header/footer for unencrypted key
+          head -1 cosign.key | grep -q 'BEGIN SIGSTORE PRIVATE KEY' || { echo 'Bad cosign.key header'; exit 1; }
+          tail -1 cosign.key | grep -q 'END SIGSTORE PRIVATE KEY'   || { echo 'Bad cosign.key footer'; exit 1; }
           chmod 600 cosign.key
 
       - name: Sign the container image with Cosign
         run: cosign sign --key cosign.key ${{ steps.build-and-push.outputs.digest }}
-        env:
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
 
       - name: Verify signature
         run: cosign verify --key cosign.key ${{ steps.build-and-push.outputs.digest }}
-
