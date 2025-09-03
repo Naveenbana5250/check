@@ -50,6 +50,6 @@ jobs:
       # 7️⃣ Sign the image using Cosign
       - name: Sign the container image
         run: |
-          cosign sign --key cosign.key $IMAGE_DIGEST
+          cosign sign --key cosign.key --yes $IMAGE_DIGEST
         env:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
