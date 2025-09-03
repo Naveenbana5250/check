@@ -111,6 +111,19 @@ jobs:
               .spec.template.metadata.labels.env = (.spec.template.metadata.labels.env // "dev")
             ' deployment.yaml
 
+      - name: Pin digest in manifest
+        uses: mikefarah/yq@v4.44.3
+        with:
+          cmd: |
+            yq -i '
+              .spec.template.spec.containers =
+                (.spec.template.spec.containers
+                 | map(if .name == "leviathan-app" then .image = strenv(IMAGE) else . end)) |
+              .spec.template.spec.initContainers =
+                ((.spec.template.spec.initContainers // [])
+                 | map(if .name == "leviathan-app" then .image = strenv(IMAGE) else . end))
+            ' deployment.yaml
+
       - name: Deploy signed workload
         env:
           KUBECONFIG: ${{ env.KUBECONFIG }}
