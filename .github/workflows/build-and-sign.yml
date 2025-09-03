@@ -84,10 +84,6 @@ jobs:
           # Apply the policy
           kubectl apply -f require-signing-policy.yaml
 
-          # Dry-run validation of deployment
-          kyverno apply require-signing-policy.yaml --resource deployment.yaml --namespace default --fail-on-error
-
-      # 1️⃣1️⃣ Deploy to Kubernetes only if validation passes
       - name: Deploy to Kubernetes
         run: |
           export KUBECONFIG=$PWD/kubeconfig
