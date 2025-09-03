@@ -1,3 +1,4 @@
+# .github/workflows/build-and-sign.yml
 name: Build, Push, and Sign Container Image
 
 on:
@@ -10,15 +11,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2️⃣ Log in to Docker Hub
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # 3️⃣ Build and push Docker image
       - name: Build and push Docker image
         id: build-and-push
         uses: docker/build-push-action@v5
@@ -27,19 +31,25 @@ jobs:
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/leviathan-app:latest
 
+      # 4️⃣ Install Cosign
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3.5.0
 
+      # 5️⃣ Restore Cosign Key (unencrypted)
       - name: Restore Cosign Key
         run: |
-          echo "${{ secrets.COSIGN_PRIVATE_KEY }}" > cosign.key
-          # Check header/footer for unencrypted key
+          cat <<'EOF' > cosign.key
+${{ secrets.COSIGN_PRIVATE_KEY }}
+EOF
+          # Validate header/footer
           head -1 cosign.key | grep -q 'BEGIN SIGSTORE PRIVATE KEY' || { echo 'Bad cosign.key header'; exit 1; }
           tail -1 cosign.key | grep -q 'END SIGSTORE PRIVATE KEY'   || { echo 'Bad cosign.key footer'; exit 1; }
           chmod 600 cosign.key
 
+      # 6️⃣ Sign the container image with Cosign
       - name: Sign the container image with Cosign
         run: cosign sign --key cosign.key ${{ steps.build-and-push.outputs.digest }}
 
+      # 7️⃣ Verify the signature
       - name: Verify signature
         run: cosign verify --key cosign.key ${{ steps.build-and-push.outputs.digest }}
