@@ -57,6 +57,7 @@ jobs:
       # 8️⃣ Deploy to Kubernetes
       - name: Deploy to Kubernetes
         run: |
+          echo "${{ secrets.KUBECONFIG }}" > kubeconfig
+          export KUBECONFIG=$PWD/kubeconfig
           kubectl apply -f deployment.yaml
-        env:
-          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+
