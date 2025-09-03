@@ -1,20 +1,23 @@
-# .github/workflows/build-push-sign-and-deploy.yml
 name: Build, Sign, Enforce, Test, Deploy
 on:
   push:
     branches: [ "main" ]
+
 jobs:
   supply-chain:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: docker/login-action@v3
+      - name: Docker Hub login
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - id: build
+      - name: Build and push
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -23,10 +26,14 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/leviathan-app:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/leviathan-app:${{ github.sha }}
 
-      - run: echo "IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/leviathan-app@${{ steps.build.outputs.digest }}" >> $GITHUB_ENV
+      - name: Export digest
+        run: echo "IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/leviathan-app@${{ steps.build.outputs.digest }}" >> $GITHUB_ENV
 
-      - uses: sigstore/cosign-installer@v3.5.0
-      - run: |
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.5.0
+
+      - name: Write cosign keys
+        run: |
           printf '%s\n' "${{ secrets.COSIGN_PRIVATE_KEY }}" > cosign.key
           printf '%s\n' "${{ secrets.COSIGN_PUBLIC_KEY }}" > cosign.pub
 
@@ -38,46 +45,73 @@ jobs:
       - name: Verify signature
         run: cosign verify --key cosign.pub "$IMAGE"
 
-      - uses: azure/setup-kubectl@v4
-      - uses: azure/setup-helm@v4
-      - name: Configure cluster and install Kyverno
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Setup helm
+        uses: azure/setup-helm@v4
+
+      - name: Configure kubeconfig
         run: |
           echo "${{ secrets.KUBECONFIG_CONTENT }}" > kubeconfig
-          export KUBECONFIG=$PWD/kubeconfig
+          echo "KUBECONFIG=$PWD/kubeconfig" >> $GITHUB_ENV
+
+      - name: Install Kyverno
+        env:
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+        run: |
           helm repo add kyverno https://kyverno.github.io/kyverno/
           helm repo update
           helm upgrade --install kyverno kyverno/kyverno \
             --namespace kyverno --create-namespace \
             --set webhook.failurePolicy=Fail --wait
+          kubectl -n kyverno rollout status deploy -l app.kubernetes.io/name=kyverno --timeout=180s
+
+      - name: Create or update cosign public key secret
+        env:
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+        run: |
           kubectl -n kyverno create secret generic cosign-pub \
             --from-file=cosign.pub=./cosign.pub \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Apply Kyverno policy
-        run: |
-          export KUBECONFIG=$PWD/kubeconfig
-          kubectl apply -f require-signing-policy.yaml
+      - name: Apply Kyverno foundation policies
+        env:
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+        run: kubectl apply -f kyverno-foundation.yaml
 
-      - name: Negative test (unsigned must be blocked)
+      - name: Negative test unsigned image
+        env:
+          KUBECONFIG: ${{ env.KUBECONFIG }}
         run: |
           set +e
-          export KUBECONFIG=$PWD/kubeconfig
           kubectl run unsigned-test --image=nginx:1.25-alpine --restart=Never
           rc=$?
           if [ $rc -eq 0 ]; then
-            echo "Unsigned image was allowed but should be blocked"
+            echo "Unsigned or unauthorized image was allowed"
             kubectl delete pod unsigned-test --force --grace-period=0 || true
             exit 1
           else
-            echo "Unsigned image correctly blocked"
+            echo "Unsigned or unauthorized image was blocked"
           fi
           set -e
 
-      - name: Deploy signed workload
-        run: |
-          export KUBECONFIG=$PWD/kubeconfig
-          kubectl apply -f deployment.yaml
+      - name: Ensure required labels
+        uses: mikefarah/yq@v4.44.3
+        with:
+          cmd: |
+            yq -i '.metadata.labels."app.kubernetes.io/name" //= "leviathan-app"' deployment.yaml
+            yq -i '.metadata.labels.owner //= "defense-team"' deployment.yaml
+            yq -i '.metadata.labels.env //= "dev"' deployment.yaml
+            yq -i '.spec.template.metadata.labels."app.kubernetes.io/name" //= "leviathan-app"' deployment.yaml
+            yq -i '.spec.template.metadata.labels.owner //= "defense-team"' deployment.yaml
+            yq -i '.spec.template.metadata.labels.env //= "dev"' deployment.yaml
 
-      - name: Cleanup keys
+      - name: Deploy signed workload
+        env:
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+        run: kubectl apply -f deployment.yaml
+
+      - name: Cleanup
         if: always()
         run: rm -f cosign.key cosign.pub kubeconfig
