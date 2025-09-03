@@ -54,10 +54,9 @@ jobs:
         env:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
 
-      # 8️⃣ Deploy to Kubernetes
+      # 8️⃣ Deploy to Kubernetes (using public IP)
       - name: Deploy to Kubernetes
         run: |
-          echo "${{ secrets.KUBECONFIG }}" > kubeconfig
+          echo "${{ secrets.KUBECONFIG_CONTENT }}" > kubeconfig
           export KUBECONFIG=$PWD/kubeconfig
           kubectl apply -f deployment.yaml
-
