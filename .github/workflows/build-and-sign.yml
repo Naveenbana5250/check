@@ -116,12 +116,8 @@ jobs:
         with:
           cmd: |
             yq -i '
-              .spec.template.spec.containers =
-                (.spec.template.spec.containers
-                 | map(if .name == "leviathan-app" then .image = strenv(IMAGE) else . end)) |
-              .spec.template.spec.initContainers =
-                ((.spec.template.spec.initContainers // [])
-                 | map(if .name == "leviathan-app" then .image = strenv(IMAGE) else . end))
+              (.spec.template.spec.containers[] | select(.name == "leviathan-app").image) = strenv(IMAGE) |
+              (.spec.template.spec.initContainers[]? | select(.name == "leviathan-app").image) = strenv(IMAGE)
             ' deployment.yaml
 
       - name: Deploy signed workload
